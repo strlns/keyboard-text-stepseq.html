@@ -1,0 +1,254 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>WebAudio API Test</title>
+</head>
+<body>
+<div id=semitones></div>
+<div id=actions></div>
+<input id=sequence style="width:100%">
+<button id=play>Play</button>
+<button id=stop>Stop</button>
+<label>
+    <input type=checkbox id=loop>⟲
+</label>
+<!-- <canvas id=sequenceGraphic></canvase> -->
+<div id=message></div>
+</body>
+<style>
+    #semitones {
+        display: flex;
+    }
+    #semitones button {
+        display: inline-flex;
+        align-items: flex-end;
+        width: 2rem;
+        font-size: 12px;
+        height: 8rem;
+        background-color: white;
+        z-index: 2;
+    }
+    #semitones button[data-black="true"] {
+        background-color: black;
+        color: white;
+        height: 6rem;
+        width: 1.5rem;
+        margin: 0 -.75rem;
+        z-index: 3;
+
+    }
+</style>
+<script>
+(() => {
+    const AUDIO = new AudioContext();
+
+    const MIDDLE_C = 261.625565;
+    const SEMITONE_RATIO = 1.0594630943592952645618252949463;
+    const NOTE_DURATION = 0.25;
+
+    const toneBtnArea = document.getElementById('semitones');
+    const actionBtnArea = document.getElementById('actions');
+    const seqArea = document.getElementById('sequenceGraphic');
+    const seqInput = document.getElementById('sequence');
+    const playBtn = document.getElementById('play');
+    const stopBtn = document.getElementById('stop');
+    const msgArea = document.getElementById('message');
+    function Sequence(seq, AUDIO) {
+        this.loop = false;
+        this.playing = false;
+        this.startTime = AUDIO.currenTime;
+        this._seq = seq;
+        let timeout;
+        this.addNote = function(tone) {
+            this.seq.push(tone===null ? tone : Number(tone));
+            drawSeq();
+        };
+        this.addPause = function() {
+            this.seq.push(null);
+            drawSeq();
+        };
+        this.deleteLast = function() {
+            this.seq.splice(-1);
+            drawSeq();
+        };
+        this.clear = function() {
+            this.seq.splice(0);
+            drawSeq();
+            this.stop();
+        };
+        this.duration = function() {
+            return NOTE_DURATION * this.seq.length;
+        };
+        this.play = function() {
+            if (this.playing) {
+                this.stop();
+            }
+            this.oscNode = AUDIO.createOscillator();
+            this.oscNode.type = 'sawtooth';
+            this.gainNode = AUDIO.createGain();
+            this.oscNode.connect(this.gainNode);
+            this.gainNode.connect(AUDIO.destination);
+            this.playing = true;
+            this.gainNode.gain.setValueAtTime(0, 0);
+            this.oscNode.start(0);
+            const doPlay = () => {
+                if (!this.seq.length) {this.stop()}
+                this.startTime = AUDIO.currentTime;
+                this.seq.forEach((tone, index) => {
+                        const time = this.startTime + index * NOTE_DURATION;
+                        if (tone === null) {
+                            this.gainNode.gain.setValueAtTime(0, time);
+                        }
+                        else {
+                            const freq = getFreq(tone);
+                            if (freq < Number.MAX_SAFE_INTEGER) {
+                                this.oscNode.frequency.setValueAtTime(getFreq(tone), time);
+                                this.gainNode.gain.setValueAtTime(.5, time);
+                            }
+                            else {
+                                this.seq.splice(index);
+                                this.stop();
+                                const msg = `${tone} is too high (frequency: ${freq}Hz)`;
+                                showMsg(msg);
+                                drawSeq();
+                            }
+                        }
+                    }
+                );
+                if (timeout) clearTimeout(timeout);
+                timeout = setTimeout(() => {
+                    console.log("timeout");
+                    if (this.loop && this.playing) {
+                        console.log("loop");
+                        doPlay();
+                    }
+                    else this.stop(0);
+                }, this.duration() * 1000);
+            };
+            doPlay();
+        };
+        this.stop = function() {
+            this.playing = false;
+            clearTimeout(timeout);
+            if (this.oscNode) this.oscNode.disconnect();
+            if (this.gainNode) this.gainNode.disconnect();
+        };
+        Object.defineProperty(this, 'seq', {configurable: false, get(){return this._seq;}, set(v){
+            if (Array.isArray(v)) {
+                this._seq = v;
+                drawSeq();
+            }
+        }});
+    }
+
+    const sequence = new Sequence(parseSeq(), AUDIO);
+
+    Array(40).fill().map((v,i) => i - 15).forEach(
+        semitone => {
+            toneBtnArea.appendChild(
+                createButton(
+                    getNoteName(semitone),
+                    {
+                        tone: semitone,
+                        black: Boolean(isRelativeToneBlack(semitone))
+                    }
+                )
+            );
+        }
+    );
+    
+    actions.appendChild(createButton('PAUSE', {action: 'pause'}));
+    actions.appendChild(createButton('Letzte Note löschen', {action: 'delete'}));
+    actions.appendChild(createButton('Alles löschen', {action: 'clear'}));
+    const isLoopInput = document.getElementById('loop');
+    sequence.loop = isLoopInput.checked;
+    isLoopInput.addEventListener('change', () => {
+        sequence.loop = isLoopInput.checked;
+    });
+    toneBtnArea.addEventListener('click', event => {
+        if (event.target.tagName === 'BUTTON') {
+            sequence.addNote(event.target.dataset.tone)
+        }
+    });
+    actionBtnArea.addEventListener('click', event => {
+        if (event.target.tagName === 'BUTTON') {
+            switch (event.target.dataset.action) {
+                case 'clear':
+                sequence.clear();
+                break;
+                case 'delete':
+                sequence.deleteLast();
+                break;
+                case 'pause':
+                sequence.addPause();
+                break;
+            }
+        }
+    });
+
+    playBtn.addEventListener('click', () => sequence.play());
+    stopBtn.addEventListener('click', () => sequence.stop());
+    
+    seqInput.addEventListener('keydown', e => {
+            if (e.isComposing) return;
+            const lastChar = e.target.value[e.target.value.length - 1];
+            if (e.key === ' ') {
+                if (lastChar === ' ') {
+                    e.preventDefault();
+                    sequence.addPause();
+                }
+            }
+            else if (lastChar === '-') {
+                console.log(e.target.value, e.key);
+                e.preventDefault();
+                e.target.value += e.key;
+                sequence.seq = parseSeq();
+            }
+        }
+    );
+    seqInput.addEventListener('input', e => {
+            if (e.isComposing || !e.data || /^\s+$/.test(e.data)) return;
+            if (e.data === '-') return;
+            sequence.seq = parseSeq();
+        }
+    );
+
+    function createButton(text, dataset) {
+        const btn = document.createElement('button');
+        btn.innerText=text;
+        if (dataset) {
+            for (const [key, value] of Object.entries(dataset)) {
+                btn.dataset[key] = value;
+            }
+        }
+        return btn;
+    }
+    function drawSeq() {
+        seqInput.value = sequence.seq.map(tone => tone === null ? '_' : tone).join(' ');
+    }
+    function parseSeq() {
+        return /^\s*$/.test(seqInput.value) ? [] : seqInput.value.split(/\s+/).map(v => 
+            v === '_' ? null : Number(v)
+        ).filter(v => !isNaN(v));
+    }
+    function isRelativeToneBlack(semitone) {
+        return [1,3,6,8,10].includes(getNormalizedSemitone(semitone));
+    }
+    function getNormalizedSemitone(semitone) {
+        if (semitone < 0) return (12 + (semitone % 12)) % 12
+        return semitone % 12;
+    }
+    function getNoteName(semitone) {
+        return ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'][getNormalizedSemitone(semitone)];
+    }
+
+    function getFreq(tone) {
+        return MIDDLE_C * Math.pow(SEMITONE_RATIO, tone);
+    }
+    function showMsg(msg) {
+        msgArea.innerText = msg;
+        setTimeout(() => msgArea.innerText = '', 2500);
+    }
+})();
+</script>
